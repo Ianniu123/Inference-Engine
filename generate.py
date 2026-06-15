@@ -2,9 +2,36 @@ import torch
 import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-def load_model(model_name, device):
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+def load_model(model_name, device, dtype="fp32", load_in_8bit=False):
+    kwargs = {}
+    
+    if load_in_8bit:
+        kwargs["load_in_8bit"] = True
+        kwargs["device_map"] = "auto"
+    else:
+        if dtype == "fp16":
+            kwargs["torch_dtype"] = torch.float16
+        elif dtype == "bf16":
+            kwargs["torch_dtype"] = torch.bfloat16
+        else:
+            kwargs["torch_dtype"] = torch.float32
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+    
+    if not load_in_8bit:
+        model = model.to(device)
+        
     return model
+
+def memory_profile(device, stage_name=""):
+    if device == "cuda" and torch.cuda.is_available():
+        mem_alloc = torch.cuda.max_memory_allocated() / 1024**3
+        mem_res = torch.cuda.memory_reserved() / 1024**3
+        print(f"[{stage_name}] CUDA Memory - Peak Allocated: {mem_alloc:.2f} GB | Reserved: {mem_res:.2f} GB")
+    elif device == "mps" and hasattr(torch.mps, "current_allocated_memory"):
+        mem_alloc = torch.mps.current_allocated_memory() / 1024**3
+        mem_res = torch.mps.driver_allocated_memory() / 1024**3
+        print(f"[{stage_name}] MPS Memory - Allocated (Active): {mem_alloc:.2f} GB | Reserved (Driver): {mem_res:.2f} GB")
 
 def load_tokenizer(tokenizer_name):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -92,15 +119,19 @@ parser.add_argument("prompt", nargs="+", help="One or more prompts separated by 
 parser.add_argument("--temperature", type=float, default=0.1)
 parser.add_argument("--top_k", type=int, default=50)
 parser.add_argument("--max_tokens", type=int, default=50)
+parser.add_argument("--dtype", type=str, choices=["fp32", "fp16", "bf16"], default="fp32")
+parser.add_argument("--load_in_8bit", action="store_true")
 
 if __name__ == "__main__":
     MODEL_NAME = "Qwen/Qwen3.5-0.8B"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    tokenizer = load_tokenizer(MODEL_NAME)
-    model = load_model(MODEL_NAME, device)
+    device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
 
     args = parser.parse_args()
+
+    tokenizer = load_tokenizer(MODEL_NAME)
+    model = load_model(MODEL_NAME, device, dtype=args.dtype, load_in_8bit=args.load_in_8bit)
+
+    memory_profile(device, "After Model Load")
 
     temperature = args.temperature
     top_k = args.top_k
@@ -108,6 +139,8 @@ if __name__ == "__main__":
 
     prompts = args.prompt
     responses = generate(model, tokenizer, prompts, temperature, top_k, max_tokens, use_cache=True)
+    
+    memory_profile(device, "After Generation (Peak)")
     
     for i, res in enumerate(responses):
         print(f"\n--- Output {i+1} ---")
