@@ -44,6 +44,12 @@ if __name__ == "__main__":
     latency_cached    = []
     latency_no_cache  = []
 
+    print("Warming up...")
+    warmup_prompt = make_prompt(8)
+    time_generate(model, tokenizer, warmup_prompt, use_cache=True)
+    time_generate(model, tokenizer, warmup_prompt, use_cache=False)
+    print("Done.\n")
+
     for seq_len in SEQUENCE_LENGTHS:
         prompt = make_prompt(seq_len)
         actual_tokens = tokenizer(prompt, return_tensors='pt')['input_ids'].shape[1]
