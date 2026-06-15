@@ -23,7 +23,9 @@ def sample(logits, temperature, k):
         return torch.argmax(logits, dim=-1).item()
 
 def generate(model, tokenizer, prompt, temperature, k, max_tokens, use_cache=True):
+    device = next(model.parameters()).device
     input = tokenizer(prompt, return_tensors='pt')
+    input = {key: val.to(device) for key, val in input.items()}
 
     with torch.no_grad():
         if use_cache:
@@ -40,8 +42,8 @@ def generate(model, tokenizer, prompt, temperature, k, max_tokens, use_cache=Tru
                 if next_token == tokenizer.eos_token_id:
                     break
 
-                current_input['input_ids'] = torch.tensor([[next_token]])
-                current_input['attention_mask'] = torch.ones((1, 1), dtype=input['attention_mask'].dtype)
+                current_input['input_ids'] = torch.tensor([[next_token]], device=device)
+                current_input['attention_mask'] = torch.ones((1, 1), dtype=input['attention_mask'].dtype, device=device)
 
                 input['input_ids'] = torch.cat([input['input_ids'], current_input['input_ids']], dim=1)
                 input['attention_mask'] = torch.cat([input['attention_mask'], current_input['attention_mask']], dim=1)
@@ -55,8 +57,8 @@ def generate(model, tokenizer, prompt, temperature, k, max_tokens, use_cache=Tru
                 if next_token == tokenizer.eos_token_id:
                     break
 
-                input['input_ids'] = torch.cat([input['input_ids'], torch.tensor([[next_token]])], dim=1)
-                input['attention_mask'] = torch.cat([input['attention_mask'], torch.ones((1, 1), dtype=input['attention_mask'].dtype)], dim=1)
+                input['input_ids'] = torch.cat([input['input_ids'], torch.tensor([[next_token]], device=device)], dim=1)
+                input['attention_mask'] = torch.cat([input['attention_mask'], torch.ones((1, 1), dtype=input['attention_mask'].dtype, device=device)], dim=1)
 
     response = tokenizer.decode(input['input_ids'][0], skip_special_tokens=True)
     return response
