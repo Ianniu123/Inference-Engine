@@ -1,5 +1,12 @@
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any, List, Optional
+
+
+class SequenceStatus(Enum):
+    WAITING = auto()    # admitted, sitting in the scheduler's queue, not yet run
+    PREFILL = auto()    # scheduled for / undergoing its prompt forward pass
+    DECODING = auto()   # prefilled; generating one token per iteration
 
 @dataclass
 class SamplingParams:
@@ -21,6 +28,19 @@ class Sequence:
     sampling_params: SamplingParams
     num_prompt_tokens: int
     kv: Optional[Any] = None
+    status: SequenceStatus = SequenceStatus.WAITING
+
+    @property
+    def last_token(self) -> int:
+        return self.input_ids[-1]
+
+    @property
+    def num_completion_tokens(self) -> int:
+        return len(self.input_ids) - self.num_prompt_tokens
+
+    @property
+    def completion_ids(self) -> List[int]:
+        return self.input_ids[self.num_prompt_tokens:]
 
 @dataclass(eq=False)
 class Request:

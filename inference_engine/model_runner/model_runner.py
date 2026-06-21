@@ -5,12 +5,12 @@ from transformers import AutoModelForCausalLM
 
 from ..core import Sequence
 
-
 class ModelRunner:
     def __init__(self, model: str):
         # Use registry and route to a class from the models directory, for now use hf
         self.model = AutoModelForCausalLM.from_pretrained(model)
         self.device = next(self.model.parameters()).device
+        self.vocab_size = self.model.config.vocab_size
         self.model.eval()
 
     @torch.no_grad()
