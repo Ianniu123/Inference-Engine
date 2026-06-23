@@ -1,12 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, List, Optional
 
 
 class SequenceStatus(Enum):
-    WAITING = auto()    # admitted, sitting in the scheduler's queue, not yet run
-    PREFILL = auto()    # scheduled for / undergoing its prompt forward pass
-    DECODING = auto()   # prefilled; generating one token per iteration
+    WAITING = auto()
+    PREFILL = auto()
+    DECODING = auto()
 
 @dataclass
 class SamplingParams:
@@ -27,8 +27,14 @@ class Sequence:
     uid: int
     sampling_params: SamplingParams
     num_prompt_tokens: int
-    kv: Optional[Any] = None
+    kv: Optional[Any] = None                              # HF baseline path
+    block_table: List[int] = field(default_factory=list)  # paged path
+    num_cached_tokens: int = 0
     status: SequenceStatus = SequenceStatus.WAITING
+
+    @property
+    def num_tokens(self) -> int:
+        return len(self.input_ids)
 
     @property
     def last_token(self) -> int:
