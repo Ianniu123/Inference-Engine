@@ -1,80 +1,136 @@
+# HF-per-sequence vs static-batching vs continuous-batching throughput on identical (random)
+# weights and a variable-length workload; useful tokens/sec. Random weights are fine -- timing
+# depends on shapes, not values. Auto-uses GPU/fp16 when present.
+#   python benchmark.py        # small model
+#   BIG=1 python benchmark.py  # ~1.2B model, for a GPU run
+
+import os
+import random
 import time
+
 import torch
-import matplotlib.pyplot as plt
-from generate import load_model, load_tokenizer, generate
+from transformers import AutoModelForCausalLM, AutoTokenizer, GemmaConfig, GemmaForCausalLM
 
-MODEL_NAME = "Qwen/Qwen3.5-0.8B"
-TOKENS_TO_GENERATE = 20   # Keep small for CPU — increase if on GPU
-TEMPERATURE = 0.0         # Greedy: deterministic, so both runs produce same tokens
-TOP_K = 1                 # Greedy
+from inference_engine.core import Request, SamplingParams, Sequence
+from inference_engine.engine.engine import Engine
+from inference_engine.model_runner import ModelRunner, PagedModelRunner
+from inference_engine.models.loader import load_gemma_from_hf
+from inference_engine.tokenizer import Tokenizer
 
-# Sequence lengths to benchmark (prompt token counts, approximate)
-# ⚠️ On CPU this will be slow — each data point takes ~1-3 min.
-# Reduce to [16, 32, 64] if you want faster results.
-SEQUENCE_LENGTHS = [16, 32, 64, 128]
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DTYPE = torch.float16 if DEVICE.type == "cuda" else torch.float32
+BIG = os.environ.get("BIG") == "1"
+
+_rng = random.Random(0)
+NUM_REQUESTS = 32
+BATCH = 8
+PROMPTS = [
+    "The capital of France is", "Once upon a time there was", "In a distant galaxy",
+    "The stock market today", "Scientists have discovered that", "My favorite food is",
+    "The weather forecast says", "Deep learning models can",
+]
+# Realistic skew: most responses short, a minority long -- where static batching stalls.
+LENGTHS = [_rng.randint(96, 128) if _rng.random() < 0.25 else _rng.randint(8, 24) for _ in range(NUM_REQUESTS)]
+PROMPT_OF = [PROMPTS[i % len(PROMPTS)] for i in range(NUM_REQUESTS)]
+USEFUL = sum(LENGTHS)
 
 
-def make_prompt(approx_tokens: int) -> str:
-    """Generate a dummy prompt of approximately `approx_tokens` tokens."""
-    return "hello " * approx_tokens  # each 'hello ' ≈ 1-2 tokens
+def build_model_dir() -> str:
+    import tempfile
+
+    torch.manual_seed(0)
+    tok = AutoTokenizer.from_pretrained("gpt2")
+    if BIG:  # ~1.2B, GQA -- representative of a small production model
+        cfg = dict(hidden_size=2048, intermediate_size=8192, num_hidden_layers=16,
+                   num_attention_heads=16, num_key_value_heads=8, head_dim=128)
+    else:
+        cfg = dict(hidden_size=512, intermediate_size=2048, num_hidden_layers=6,
+                   num_attention_heads=8, num_key_value_heads=8, head_dim=64)
+    config = GemmaConfig(vocab_size=tok.vocab_size, max_position_embeddings=512,
+                         hidden_act="gelu_pytorch_tanh", rms_norm_eps=1e-6, **cfg)
+    d = tempfile.mkdtemp()
+    GemmaForCausalLM(config).eval().save_pretrained(d)
+    tok.save_pretrained(d)
+    return d
 
 
-def time_generate(model, tokenizer, prompt, use_cache: bool) -> float:
-    """Run generate() once and return elapsed wall-clock time in seconds."""
-    start = time.perf_counter()
-    generate(
-        model, tokenizer, prompt,
-        temperature=TEMPERATURE,
-        k=TOP_K,
-        max_tokens=TOKENS_TO_GENERATE,
-        use_cache=use_cache,
+def new_paged_runner(model, cfg) -> PagedModelRunner:
+    return PagedModelRunner(
+        model, num_layers=cfg.num_hidden_layers, num_heads=cfg.num_attention_heads,
+        num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
+        head_dim=cfg.hidden_size // cfg.num_attention_heads, vocab_size=cfg.vocab_size,
+        num_blocks=1024, block_size=16, device=DEVICE, dtype=DTYPE,
     )
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()  # wait for all CUDA kernels to finish
-    return time.perf_counter() - start
+
+
+def make_requests():
+    return [
+        Request(prompt=PROMPT_OF[i], uid=i,
+                sampling_params=SamplingParams(temperature=0.0, max_tokens=LENGTHS[i], ignore_eos=True))
+        for i in range(NUM_REQUESTS)
+    ]
+
+
+def _sync():
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
+
+
+def run_continuous(engine: Engine) -> float:
+    engine.scheduler.max_num_seqs = BATCH
+    engine.generate(make_requests()[:2])  # warmup
+    _sync()
+    t0 = time.perf_counter()
+    engine.generate(make_requests())
+    _sync()
+    return USEFUL / (time.perf_counter() - t0)
+
+
+@torch.no_grad()
+def run_static(runner: PagedModelRunner, tokenizer: Tokenizer) -> float:
+    ids = tokenizer.encode(PROMPT_OF)
+    _sync()
+    t0 = time.perf_counter()
+    for i in range(0, NUM_REQUESTS, BATCH):
+        wave = [Sequence(list(ids[j]), j, SamplingParams(), len(ids[j])) for j in range(i, min(i + BATCH, NUM_REQUESTS))]
+        steps = max(LENGTHS[i:i + BATCH])
+        prefill = True
+        for _ in range(steps):  # keep every sequence in the batch for the wave's full length
+            logits = runner.run(wave, is_prefill=prefill)
+            for seq, tok in zip(wave, logits.argmax(-1).tolist()):
+                seq.input_ids.append(tok)
+            prefill = False
+        for seq in wave:
+            runner.free(seq)
+    _sync()
+    return USEFUL / (time.perf_counter() - t0)
+
+
+def hf_baseline_engine(model_dir: str) -> Engine:
+    runner = ModelRunner(model_dir)
+    runner.model = runner.model.to(device=DEVICE, dtype=DTYPE)
+    runner.device = DEVICE
+    return Engine(tokenizer=Tokenizer(model_dir), model_runner=runner)
+
+
+def main() -> None:
+    model = os.environ.get("MODEL") or build_model_dir()
+    hf = AutoModelForCausalLM.from_pretrained(model).eval()
+    cfg = hf.config
+    scratch = load_gemma_from_hf(hf).eval()  # stateless: shared across paged runners
+
+    baseline = run_continuous(hf_baseline_engine(model))
+    static = run_static(new_paged_runner(scratch, cfg), Tokenizer(model))
+    cont = run_continuous(Engine(tokenizer=Tokenizer(model), model_runner=new_paged_runner(scratch, cfg)))
+
+    size = "1.2B" if BIG else "6L/512d"
+    print(f"device={DEVICE.type} dtype={DTYPE} model={size}  "
+          f"workload: {NUM_REQUESTS} reqs, batch {BATCH}, {min(LENGTHS)}-{max(LENGTHS)} tokens\n")
+    print(f"  HF baseline (per-seq)     {baseline:8.1f} tok/s")
+    print(f"  static batching           {static:8.1f} tok/s")
+    print(f"  continuous batching (new) {cont:8.1f} tok/s")
+    print(f"\n  continuous vs static: {cont / static:.2f}x    vs HF per-seq: {cont / baseline:.2f}x")
 
 
 if __name__ == "__main__":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Running on: {device}\n")
-
-    tokenizer = load_tokenizer(MODEL_NAME)
-    model = load_model(MODEL_NAME, device)
-
-    latency_cached    = []
-    latency_no_cache  = []
-
-    print("Warming up...")
-    warmup_prompt = make_prompt(8)
-    time_generate(model, tokenizer, warmup_prompt, use_cache=True)
-    time_generate(model, tokenizer, warmup_prompt, use_cache=False)
-    print("Done.\n")
-
-    for seq_len in SEQUENCE_LENGTHS:
-        prompt = make_prompt(seq_len)
-        actual_tokens = tokenizer(prompt, return_tensors='pt')['input_ids'].shape[1]
-
-        print(f"Prompt length: ~{actual_tokens} tokens")
-
-        t_cached   = time_generate(model, tokenizer, prompt, use_cache=True)
-        t_no_cache = time_generate(model, tokenizer, prompt, use_cache=False)
-
-        latency_cached.append(t_cached)
-        latency_no_cache.append(t_no_cache)
-
-        speedup = t_no_cache / t_cached if t_cached > 0 else float('inf')
-        print(f"  cached={t_cached:.2f}s  |  no_cache={t_no_cache:.2f}s  |  speedup={speedup:.2f}x\n")
-
-    # --- Plot ---
-    plt.figure(figsize=(9, 5))
-    plt.plot(SEQUENCE_LENGTHS, latency_no_cache, 'r-o', label='No KV Cache', linewidth=2)
-    plt.plot(SEQUENCE_LENGTHS, latency_cached,   'g-o', label='With KV Cache', linewidth=2)
-    plt.xlabel('Approximate Prompt Length (tokens)')
-    plt.ylabel(f'Time to generate {TOKENS_TO_GENERATE} tokens (s)')
-    plt.title('KV Cache: Latency vs. Sequence Length')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('kv_cache_benchmark.png', dpi=150)
-    plt.show()
-    print("Plot saved → kv_cache_benchmark.png")
+    main()
