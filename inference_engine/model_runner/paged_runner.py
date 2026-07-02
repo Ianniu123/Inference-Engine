@@ -28,15 +28,20 @@ class PagedModelRunner:
         device: torch.device | None = None,
     ):
         self.device = torch.device(device) if device else next(model.parameters()).device
-        self.model = model.eval()
+        self.dtype = dtype
+        self.model = model.to(device=self.device, dtype=self.dtype).eval()
         self.vocab_size = vocab_size
         self.block_size = block_size
         self.blocks = BlockManager(num_blocks, block_size)
         self.cache = KVCache(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype, self.device)
 
     @classmethod
-    def from_hf(cls, model_name: str, **kwargs) -> "PagedModelRunner":
+    def from_hf(cls, model_name: str, *, device=None, dtype=None, **kwargs) -> "PagedModelRunner":
         from transformers import AutoModelForCausalLM
+
+        device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if dtype is None:
+            dtype = torch.float16 if device.type == "cuda" else torch.float32
 
         hf = AutoModelForCausalLM.from_pretrained(model_name)
         cfg = hf.config
@@ -47,6 +52,8 @@ class PagedModelRunner:
             num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
             head_dim=cfg.hidden_size // cfg.num_attention_heads,
             vocab_size=cfg.vocab_size,
+            device=device,
+            dtype=dtype,
             **kwargs,
         )
 
