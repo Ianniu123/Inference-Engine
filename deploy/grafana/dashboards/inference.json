@@ -1,0 +1,64 @@
+{
+  "uid": "inference-engine",
+  "title": "Inference Engine",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request rate",
+      "datasource": { "type": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus" },
+          "expr": "rate(inference_requests_total[1m])", "legendFormat": "requests/s" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Token throughput",
+      "datasource": { "type": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus" },
+          "expr": "rate(inference_tokens_generated_total[1m])", "legendFormat": "tokens/s" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Request latency (p50 / p95 / p99)",
+      "datasource": { "type": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.50, rate(inference_request_latency_seconds_bucket[1m]))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.95, rate(inference_request_latency_seconds_bucket[1m]))", "legendFormat": "p95" },
+        { "refId": "C", "datasource": { "type": "prometheus" },
+          "expr": "histogram_quantile(0.99, rate(inference_request_latency_seconds_bucket[1m]))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Scheduler occupancy",
+      "datasource": { "type": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus" },
+          "expr": "inference_running_sequences", "legendFormat": "running (decode)" },
+        { "refId": "B", "datasource": { "type": "prometheus" },
+          "expr": "inference_pending_sequences", "legendFormat": "pending (prefill)" }
+      ]
+    }
+  ]
+}

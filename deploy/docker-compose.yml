@@ -1,0 +1,34 @@
+# Observability stack: the engine + Prometheus (scrapes /metrics) + Grafana (dashboards).
+#   MODEL=<gemma-checkpoint-or-local-dir> HF_TOKEN=<token> docker compose -f deploy/docker-compose.yml up
+# Grafana: http://localhost:3000 (anonymous admin)  |  Prometheus: http://localhost:9090
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL=${MODEL:-google/gemma-2b}
+      - HF_TOKEN=${HF_TOKEN:-}
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
