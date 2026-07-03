@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, NamedTuple
+from typing import Callable, Dict, List, NamedTuple, Optional
 
 from ..core import Request, Sequence, SequenceStatus
 from ..kv_cache import OutOfBlocks
@@ -95,7 +95,9 @@ class Engine:
                 batch.remove(victim)
         return batch
 
-    def step(self) -> List[Completion]:
+    def step(self, on_token: Optional[Callable[[int, str], None]] = None) -> List[Completion]:
+        # on_token(uid, delta) streams each new piece of text as it is decoded (server path);
+        # offline callers pass nothing and pay no per-token detokenization cost.
         batch, is_prefill = self.scheduler.schedule()
         if not batch:
             return []
@@ -109,6 +111,12 @@ class Engine:
         for seq, token in zip(batch, tokens):
             seq.input_ids.append(token)
             seq.status = SequenceStatus.DECODING
+            if on_token is not None:
+                text = self.tokenizer.decode(seq.completion_ids)
+                delta = text[seq.num_streamed_chars:]
+                seq.num_streamed_chars = len(text)
+                if delta:
+                    on_token(seq.uid, delta)
             if self._is_finished(seq, token):
                 self.scheduler.remove(seq)
                 self.model_runner.free(seq)

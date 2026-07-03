@@ -1,6 +1,6 @@
 # Thread + queue transport around the single-threaded Engine: one background thread owns the
-# engine and runs the step loop; FastAPI coroutines submit over a queue and await a Future the
-# engine thread resolves. Requests submitted mid-decode are admitted at the next scheduler pass.
+# engine and runs the step loop; FastAPI coroutines submit over a queue and await a Future
+# (or drain an asyncio.Queue for streaming) that the engine thread resolves.
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ class EngineService:
         self.engine = Engine(tokenizer, model)
         self._incoming: SimpleQueue = SimpleQueue()
         self._futures: dict[int, asyncio.Future] = {}
+        self._streams: dict[int, asyncio.Queue] = {}
         self._start_times: dict[int, float] = {}
         self._uid = itertools.count()
         self._wake = threading.Event()
@@ -33,19 +34,27 @@ class EngineService:
         self._thread.start()
 
     def submit(self, prompt: str, params: SamplingParams) -> asyncio.Future:
-        fut = self._loop.create_future()
+        sink = self._loop.create_future()
+        self._enqueue(prompt, params, sink)
+        return sink
+
+    def submit_stream(self, prompt: str, params: SamplingParams) -> asyncio.Queue:
+        sink: asyncio.Queue = asyncio.Queue()
+        self._enqueue(prompt, params, sink)
+        return sink
+
+    def _enqueue(self, prompt: str, params: SamplingParams, sink) -> None:
         uid = next(self._uid)
         self._start_times[uid] = time.monotonic()
-        self._incoming.put((Request(prompt=prompt, uid=uid, sampling_params=params), fut))
+        self._incoming.put((Request(prompt=prompt, uid=uid, sampling_params=params), sink))
         self._wake.set()
-        return fut
 
     def _run(self) -> None:
         while True:
             self._drain_incoming()
             if self.engine.has_work():
-                for completion in self.engine.step():
-                    self._resolve(completion)
+                for completion in self.engine.step(on_token=self._on_token):
+                    self._finish(completion)
                 self._update_gauges()
             else:
                 self._wake.wait()
@@ -53,17 +62,28 @@ class EngineService:
 
     def _drain_incoming(self) -> None:
         while not self._incoming.empty():
-            req, fut = self._incoming.get()
-            self._futures[req.uid] = fut
+            req, sink = self._incoming.get()
+            (self._streams if isinstance(sink, asyncio.Queue) else self._futures)[req.uid] = sink
             self.engine.add_request(req)
 
-    def _resolve(self, completion: Completion) -> None:
-        fut = self._futures.pop(completion.uid, None)
-        start = self._start_times.pop(completion.uid, None)
+    def _on_token(self, uid: int, delta: str) -> None:
+        q = self._streams.get(uid)
+        if q is not None:
+            self._loop.call_soon_threadsafe(q.put_nowait, delta)
+
+    def _finish(self, completion: Completion) -> None:
+        uid = completion.uid
+        start = self._start_times.pop(uid, None)
         if start is not None:
             metrics.REQUESTS.inc()
             metrics.TOKENS.inc(completion.num_tokens)
             metrics.LATENCY.observe(time.monotonic() - start)
+
+        q = self._streams.pop(uid, None)
+        if q is not None:
+            self._loop.call_soon_threadsafe(q.put_nowait, None)  # end-of-stream sentinel
+            return
+        fut = self._futures.pop(uid, None)
         if fut is not None and not fut.done():
             self._loop.call_soon_threadsafe(fut.set_result, completion)
 

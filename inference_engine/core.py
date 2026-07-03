@@ -30,6 +30,7 @@ class Sequence:
     kv: Optional[Any] = None                              # HF baseline path
     block_table: List[int] = field(default_factory=list)  # paged path
     num_cached_tokens: int = 0
+    num_streamed_chars: int = 0
     status: SequenceStatus = SequenceStatus.WAITING
 
     @property
