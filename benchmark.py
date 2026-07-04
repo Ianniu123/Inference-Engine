@@ -14,7 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GemmaConfig, Gemma
 
 from inference_engine.core import Request, SamplingParams, Sequence
 from inference_engine.engine.engine import Engine
-from inference_engine.model_runner import ModelRunner, PagedModelRunner
+from inference_engine.model_runner import HFBaselineRunner, ModelRunner
 from inference_engine.models.loader import load_gemma_from_hf
 from inference_engine.tokenizer import Tokenizer
 
@@ -55,8 +55,8 @@ def build_model_dir() -> str:
     return d
 
 
-def new_paged_runner(model, cfg) -> PagedModelRunner:
-    return PagedModelRunner(
+def new_paged_runner(model, cfg) -> ModelRunner:
+    return ModelRunner(
         model, num_layers=cfg.num_hidden_layers, num_heads=cfg.num_attention_heads,
         num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
         head_dim=cfg.hidden_size // cfg.num_attention_heads, vocab_size=cfg.vocab_size,
@@ -94,7 +94,7 @@ def run_continuous(engine: Engine) -> float:
 
 
 @torch.no_grad()
-def run_static(runner: PagedModelRunner, tokenizer: Tokenizer) -> float:
+def run_static(runner: ModelRunner, tokenizer: Tokenizer) -> float:
     ids = tokenizer.encode(PROMPT_OF)
     _sync()
     t0 = time.perf_counter()
@@ -114,14 +114,14 @@ def run_static(runner: PagedModelRunner, tokenizer: Tokenizer) -> float:
 
 
 def hf_baseline_engine(model_dir: str) -> Engine:
-    runner = ModelRunner(model_dir)
+    runner = HFBaselineRunner(model_dir)
     runner.model = runner.model.to(device=DEVICE, dtype=DTYPE)
     runner.device = DEVICE
     return Engine(tokenizer=Tokenizer(model_dir), model_runner=runner)
 
 
 @torch.no_grad()
-def decode_latency_ms(runner: PagedModelRunner, tokenizer: Tokenizer):
+def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
     # Inter-token latency: time each decode step over a full batch (one token per sequence).
     ids = tokenizer.encode(PROMPT_OF[:BATCH])
     seqs = [Sequence(list(ids[i]), i, SamplingParams(max_tokens=99, ignore_eos=True), len(ids[i])) for i in range(BATCH)]

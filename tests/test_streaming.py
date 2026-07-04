@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, GemmaConfig, GemmaForCausalLM
 
 from inference_engine.core import Request, SamplingParams
 from inference_engine.engine.engine import Engine
-from inference_engine.model_runner import PagedModelRunner
+from inference_engine.model_runner import ModelRunner
 from inference_engine.models.loader import load_gemma_from_hf
 from inference_engine.tokenizer import Tokenizer
 
@@ -19,7 +19,7 @@ def test_stream_deltas_reconstruct_text():
         hidden_act="gelu_pytorch_tanh", rms_norm_eps=1e-6,
     )
     hf = GemmaForCausalLM(cfg).eval()
-    runner = PagedModelRunner(
+    runner = ModelRunner(
         load_gemma_from_hf(hf).eval(), num_layers=2, num_heads=4, num_kv_heads=4,
         head_dim=16, vocab_size=cfg.vocab_size, num_blocks=64, block_size=8,
     )

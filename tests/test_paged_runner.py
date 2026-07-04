@@ -1,4 +1,4 @@
-"""Engine + PagedModelRunner must greedy-decode several concurrent sequences identically to
+"""Engine + ModelRunner must greedy-decode several concurrent sequences identically to
 HF, and reclaim every block on finish (MHA/GQA/MQA)."""
 
 import pytest
@@ -7,7 +7,7 @@ from transformers import GemmaConfig, GemmaForCausalLM
 
 from inference_engine.core import Request, SamplingParams
 from inference_engine.engine.engine import Engine
-from inference_engine.model_runner import PagedModelRunner
+from inference_engine.model_runner import ModelRunner
 from inference_engine.models.loader import load_gemma_from_hf
 
 NEW_TOKENS = 12
@@ -69,7 +69,7 @@ def _build(num_kv_heads):
         rms_norm_eps=1e-6,
     )
     hf = GemmaForCausalLM(cfg).eval()
-    runner = PagedModelRunner(
+    runner = ModelRunner(
         load_gemma_from_hf(hf).eval(),
         num_layers=cfg.num_hidden_layers,
         num_heads=heads,

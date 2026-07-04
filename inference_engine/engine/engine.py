@@ -3,7 +3,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional
 
 from ..core import Request, Sequence, SequenceStatus
 from ..kv_cache import OutOfBlocks
-from ..model_runner import PagedModelRunner
+from ..model_runner import ModelRunner
 from ..scheduler import Scheduler
 from ..tokenizer import Tokenizer
 from .sampler import Sampler
@@ -20,7 +20,7 @@ class Engine:
         # Defaults to the from-scratch model over the paged cache; tokenizer/model_runner
         # can be injected (a test stub, or the HF baseline runner in the benchmark).
         self.tokenizer = tokenizer if not isinstance(tokenizer, str) else Tokenizer(tokenizer)
-        self.model_runner = model_runner if model_runner is not None else PagedModelRunner.from_hf(model)
+        self.model_runner = model_runner if model_runner is not None else ModelRunner.from_hf(model)
         self.sampler = Sampler(self.model_runner.vocab_size)
         self.scheduler = Scheduler()
         self.eos_token_id = self.tokenizer.eos_token_id

@@ -5,7 +5,7 @@ from transformers import GemmaConfig, GemmaForCausalLM
 
 from inference_engine.core import Request, SamplingParams
 from inference_engine.engine.engine import Engine
-from inference_engine.model_runner import PagedModelRunner
+from inference_engine.model_runner import ModelRunner
 from inference_engine.models.loader import load_gemma_from_hf
 
 NEW_TOKENS = 15
@@ -52,7 +52,7 @@ def test_preemption_preserves_output():
         max_position_embeddings=128, hidden_act="gelu_pytorch_tanh", rms_norm_eps=1e-6,
     )
     hf = GemmaForCausalLM(cfg).eval()
-    runner = PagedModelRunner(
+    runner = ModelRunner(
         load_gemma_from_hf(hf).eval(),
         num_layers=cfg.num_hidden_layers, num_heads=heads, num_kv_heads=heads,
         head_dim=hidden // heads, vocab_size=cfg.vocab_size,
