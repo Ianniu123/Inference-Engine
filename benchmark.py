@@ -4,6 +4,7 @@
 #   python benchmark.py        # small model
 #   BIG=1 python benchmark.py  # ~1.2B model, for a GPU run
 
+import gc
 import os
 import random
 import time
@@ -59,8 +60,14 @@ def new_paged_runner(model, cfg) -> PagedModelRunner:
         model, num_layers=cfg.num_hidden_layers, num_heads=cfg.num_attention_heads,
         num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
         head_dim=cfg.hidden_size // cfg.num_attention_heads, vocab_size=cfg.vocab_size,
-        num_blocks=1024, block_size=16, device=DEVICE, dtype=DTYPE,
+        num_blocks=512, block_size=16, device=DEVICE, dtype=DTYPE,
     )
+
+
+def _free():
+    gc.collect()
+    if DEVICE.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def make_requests():
@@ -113,15 +120,52 @@ def hf_baseline_engine(model_dir: str) -> Engine:
     return Engine(tokenizer=Tokenizer(model_dir), model_runner=runner)
 
 
+@torch.no_grad()
+def decode_latency_ms(runner: PagedModelRunner, tokenizer: Tokenizer):
+    # Inter-token latency: time each decode step over a full batch (one token per sequence).
+    ids = tokenizer.encode(PROMPT_OF[:BATCH])
+    seqs = [Sequence(list(ids[i]), i, SamplingParams(max_tokens=99, ignore_eos=True), len(ids[i])) for i in range(BATCH)]
+    logits = runner.run(seqs, is_prefill=True)
+    for seq, t in zip(seqs, logits.argmax(-1).tolist()):
+        seq.input_ids.append(t)
+    times = []
+    for _ in range(40):
+        _sync(); t0 = time.perf_counter()
+        logits = runner.run(seqs, is_prefill=False)
+        _sync(); times.append((time.perf_counter() - t0) * 1000)
+        for seq, t in zip(seqs, logits.argmax(-1).tolist()):
+            seq.input_ids.append(t)
+    for seq in seqs:
+        runner.free(seq)
+    times.sort()
+    return times[len(times) // 2], times[int(0.99 * len(times))]
+
+
+def overlap_speedup(scratch, cfg, model_dir: str) -> float:
+    engine = Engine(tokenizer=Tokenizer(model_dir), model_runner=new_paged_runner(scratch, cfg))
+    engine.scheduler.max_num_seqs = BATCH
+    engine.generate(make_requests()[:2])  # warmup
+    _sync(); t0 = time.perf_counter(); engine.generate(make_requests()); _sync()
+    sync_t = time.perf_counter() - t0
+    _sync(); t0 = time.perf_counter(); engine.generate_overlapped(make_requests()); _sync()
+    overlap_t = time.perf_counter() - t0
+    return sync_t / overlap_t
+
+
 def main() -> None:
     model = os.environ.get("MODEL") or build_model_dir()
     hf = AutoModelForCausalLM.from_pretrained(model).eval()
     cfg = hf.config
     scratch = load_gemma_from_hf(hf).eval()  # stateless: shared across paged runners
+    del hf
+    _free()
 
     baseline = run_continuous(hf_baseline_engine(model))
+    _free()  # drop the HF baseline model before allocating paged KV pools
     static = run_static(new_paged_runner(scratch, cfg), Tokenizer(model))
+    _free()
     cont = run_continuous(Engine(tokenizer=Tokenizer(model), model_runner=new_paged_runner(scratch, cfg)))
+    _free()
 
     size = "1.2B" if BIG else "6L/512d"
     print(f"device={DEVICE.type} dtype={DTYPE} model={size}  "
@@ -130,6 +174,10 @@ def main() -> None:
     print(f"  static batching           {static:8.1f} tok/s")
     print(f"  continuous batching (new) {cont:8.1f} tok/s")
     print(f"\n  continuous vs static: {cont / static:.2f}x    vs HF per-seq: {cont / baseline:.2f}x")
+
+    p50, p99 = decode_latency_ms(new_paged_runner(scratch, cfg), Tokenizer(model))
+    print(f"\n  inter-token latency @ batch {BATCH}: p50 {p50:.1f} ms   p99 {p99:.1f} ms")
+    print(f"  overlap scheduler speedup: {overlap_speedup(scratch, cfg, model):.2f}x")
 
 
 if __name__ == "__main__":
