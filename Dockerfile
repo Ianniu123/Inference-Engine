@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
     -r requirements.txt
 
 COPY inference_engine ./inference_engine
-COPY server.py benchmark.py ./
+COPY server.py ./
 
 ENV MODEL=google/gemma-2b
 EXPOSE 8000
