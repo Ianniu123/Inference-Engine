@@ -83,6 +83,19 @@ def _sync():
         torch.cuda.synchronize()
 
 
+# The static/latency paths drive the runner directly (no scheduler), so they reserve
+# blocks themselves: enough for the prompt plus every token they will generate.
+def reserve(runner: ModelRunner, seqs, new_tokens: int) -> None:
+    for seq in seqs:
+        seq.block_table = runner.blocks.allocate(runner.blocks.blocks_for(seq.num_tokens + new_tokens))
+
+
+def release(runner: ModelRunner, seqs) -> None:
+    for seq in seqs:
+        runner.blocks.free_blocks(seq.block_table)
+        seq.block_table = []
+
+
 def run_continuous(engine: Engine) -> float:
     engine.scheduler.max_num_seqs = BATCH
     engine.generate(make_requests()[:2])  # warmup
@@ -101,14 +114,14 @@ def run_static(runner: ModelRunner, tokenizer: Tokenizer) -> float:
     for i in range(0, NUM_REQUESTS, BATCH):
         wave = [Sequence(list(ids[j]), j, SamplingParams(), len(ids[j])) for j in range(i, min(i + BATCH, NUM_REQUESTS))]
         steps = max(LENGTHS[i:i + BATCH])
+        reserve(runner, wave, steps)
         prefill = True
         for _ in range(steps):  # keep every sequence in the batch for the wave's full length
             logits = runner.run(wave, is_prefill=prefill)
             for seq, tok in zip(wave, logits.argmax(-1).tolist()):
                 seq.input_ids.append(tok)
             prefill = False
-        for seq in wave:
-            runner.free(seq)
+        release(runner, wave)
     _sync()
     return USEFUL / (time.perf_counter() - t0)
 
@@ -125,6 +138,7 @@ def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
     # Inter-token latency: time each decode step over a full batch (one token per sequence).
     ids = tokenizer.encode(PROMPT_OF[:BATCH])
     seqs = [Sequence(list(ids[i]), i, SamplingParams(max_tokens=99, ignore_eos=True), len(ids[i])) for i in range(BATCH)]
+    reserve(runner, seqs, 41)  # 1 prefill token + 40 timed decode steps
     logits = runner.run(seqs, is_prefill=True)
     for seq, t in zip(seqs, logits.argmax(-1).tolist()):
         seq.input_ids.append(t)
@@ -135,8 +149,7 @@ def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
         _sync(); times.append((time.perf_counter() - t0) * 1000)
         for seq, t in zip(seqs, logits.argmax(-1).tolist()):
             seq.input_ids.append(t)
-    for seq in seqs:
-        runner.free(seq)
+    release(runner, seqs)
     times.sort()
     return times[len(times) // 2], times[int(0.99 * len(times))]
 

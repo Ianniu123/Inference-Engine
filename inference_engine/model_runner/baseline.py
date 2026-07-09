@@ -29,6 +29,3 @@ class HFBaselineRunner:
             seq.kv = output.past_key_values
             last_logits.append(output.logits[0, -1, :])
         return torch.stack(last_logits, dim=0)
-
-    def free(self, seq: Sequence) -> None:
-        seq.kv = None
