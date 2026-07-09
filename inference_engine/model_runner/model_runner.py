@@ -41,9 +41,9 @@ class ModelRunner:
 
         device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if dtype is None:
-            dtype = torch.float16 if device.type == "cuda" else torch.float32
+            dtype = torch.float16
 
-        hf = AutoModelForCausalLM.from_pretrained(model_name)
+        hf = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
         cfg = hf.config
         return cls(
             load_gemma_from_hf(hf),

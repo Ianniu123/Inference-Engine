@@ -34,7 +34,7 @@ class GenerateRequest(BaseModel):
     max_tokens: int = 64
 
 
-def _params(req: "GenerateRequest") -> SamplingParams:
+def _params(req: GenerateRequest) -> SamplingParams:
     return SamplingParams(
         temperature=req.temperature, top_k=req.top_k, top_p=req.top_p, max_tokens=req.max_tokens
     )
