@@ -45,7 +45,7 @@ padding static batching wastes on finished sequences. It auto-uses the GPU (fp16
 ## Tests
 
 `pytest` checks the from-scratch model token-for-token against HuggingFace (MHA/GQA/MQA), plus
-batched-decode parity, preemption, streaming, and overlap correctness.
+batched-decode parity, preemption, and streaming.
 
 ## Running it
 

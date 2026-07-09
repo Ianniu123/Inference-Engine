@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, NamedTuple, Optional
 
 from ..core import Request, Sequence, SequenceStatus
@@ -42,58 +41,6 @@ class Engine:
             for c in self.step():
                 outputs[c.uid] = c.text
         return outputs
-
-    def generate_overlapped(self, requests: List[Request]) -> Dict[int, str]:
-        # Overlap scheduler (SGLang style): the next batch's forward runs on a worker thread
-        # while this thread post-processes the previous batch. On a GPU the async launch hides
-        # the CPU work; on CPU the forward is synchronous, so this only mirrors the structure
-        # (no speedup). Output is identical to generate().
-        for request in requests:
-            self.add_request(request)
-        outputs: Dict[int, str] = {}
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            inflight = self._launch(pool)
-            while inflight is not None:
-                batch, _, future = inflight
-                logits = future.result()
-                tokens = self.sampler.sample(logits, self.sampler.prepare(batch))
-
-                finished: List[Sequence] = []
-                for seq, token in zip(batch, tokens):
-                    seq.input_ids.append(token)
-                    seq.status = SequenceStatus.DECODING
-                    if self._is_finished(seq, token):
-                        self.scheduler.remove(seq)
-                        self.model_runner.free(seq)
-                        finished.append(seq)
-
-                inflight = self._launch(pool)
-                for seq in finished:
-                    outputs[seq.uid] = self.tokenizer.decode(seq.completion_ids)
-        return outputs
-
-    def _launch(self, pool: ThreadPoolExecutor):
-        while self.scheduler.has_work():
-            batch, is_prefill = self.scheduler.schedule()
-            if not batch:
-                return None
-            batch = self._make_room(batch, is_prefill)
-            if batch:
-                return (batch, is_prefill, pool.submit(self.model_runner.run, batch, is_prefill))
-        return None
-
-    def _make_room(self, batch: List[Sequence], is_prefill: bool) -> List[Sequence]:
-        has_capacity = getattr(self.model_runner, "has_capacity", None)
-        while batch and has_capacity and not has_capacity(batch, is_prefill):
-            victim = self._preemption_victim(batch)
-            if victim is None:
-                break
-            self.scheduler.preempt(victim)
-            self.model_runner.free(victim)
-            self.num_preemptions += 1
-            if victim in batch:
-                batch.remove(victim)
-        return batch
 
     def step(self, on_token: Optional[Callable[[int, str], None]] = None) -> List[Completion]:
         # on_token(uid, delta) streams each new piece of text as it is decoded (server path);

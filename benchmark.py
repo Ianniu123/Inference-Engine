@@ -141,17 +141,6 @@ def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
     return times[len(times) // 2], times[int(0.99 * len(times))]
 
 
-def overlap_speedup(scratch, cfg, model_dir: str) -> float:
-    engine = Engine(tokenizer=Tokenizer(model_dir), model_runner=new_paged_runner(scratch, cfg))
-    engine.scheduler.max_num_seqs = BATCH
-    engine.generate(make_requests()[:2])  # warmup
-    _sync(); t0 = time.perf_counter(); engine.generate(make_requests()); _sync()
-    sync_t = time.perf_counter() - t0
-    _sync(); t0 = time.perf_counter(); engine.generate_overlapped(make_requests()); _sync()
-    overlap_t = time.perf_counter() - t0
-    return sync_t / overlap_t
-
-
 def main() -> None:
     model = os.environ.get("MODEL") or build_model_dir()
     hf = AutoModelForCausalLM.from_pretrained(model).eval()
@@ -177,7 +166,6 @@ def main() -> None:
 
     p50, p99 = decode_latency_ms(new_paged_runner(scratch, cfg), Tokenizer(model))
     print(f"\n  inter-token latency @ batch {BATCH}: p50 {p50:.1f} ms   p99 {p99:.1f} ms")
-    print(f"  overlap scheduler speedup: {overlap_speedup(scratch, cfg, model):.2f}x")
 
 
 if __name__ == "__main__":
