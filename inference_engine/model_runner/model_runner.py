@@ -19,7 +19,6 @@ class ModelRunner:
         model,
         *,
         num_layers: int,
-        num_heads: int,
         num_kv_heads: int,
         head_dim: int,
         vocab_size: int,
@@ -49,7 +48,6 @@ class ModelRunner:
         return cls(
             load_gemma_from_hf(hf),
             num_layers=cfg.num_hidden_layers,
-            num_heads=cfg.num_attention_heads,
             num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
             head_dim=cfg.hidden_size // cfg.num_attention_heads,
             vocab_size=cfg.vocab_size,

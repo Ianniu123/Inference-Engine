@@ -20,7 +20,7 @@ def test_stream_deltas_reconstruct_text():
     )
     hf = GemmaForCausalLM(cfg).eval()
     runner = ModelRunner(
-        load_gemma_from_hf(hf).eval(), num_layers=2, num_heads=4, num_kv_heads=4,
+        load_gemma_from_hf(hf).eval(), num_layers=2, num_kv_heads=4,
         head_dim=16, vocab_size=cfg.vocab_size, num_blocks=64, block_size=8,
     )
     engine = Engine(tokenizer=Tokenizer("gpt2"), model_runner=runner)

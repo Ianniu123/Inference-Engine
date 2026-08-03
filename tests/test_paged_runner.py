@@ -72,7 +72,6 @@ def _build(num_kv_heads):
     runner = ModelRunner(
         load_gemma_from_hf(hf).eval(),
         num_layers=cfg.num_hidden_layers,
-        num_heads=heads,
         num_kv_heads=num_kv_heads,
         head_dim=hidden // heads,
         vocab_size=cfg.vocab_size,

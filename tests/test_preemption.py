@@ -54,7 +54,7 @@ def test_preemption_preserves_output():
     hf = GemmaForCausalLM(cfg).eval()
     runner = ModelRunner(
         load_gemma_from_hf(hf).eval(),
-        num_layers=cfg.num_hidden_layers, num_heads=heads, num_kv_heads=heads,
+        num_layers=cfg.num_hidden_layers, num_kv_heads=heads,
         head_dim=hidden // heads, vocab_size=cfg.vocab_size,
         num_blocks=NUM_BLOCKS, block_size=BLOCK_SIZE,
     )

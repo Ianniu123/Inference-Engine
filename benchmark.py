@@ -57,7 +57,7 @@ def build_model_dir() -> str:
 
 def new_paged_runner(model, cfg) -> ModelRunner:
     return ModelRunner(
-        model, num_layers=cfg.num_hidden_layers, num_heads=cfg.num_attention_heads,
+        model, num_layers=cfg.num_hidden_layers,
         num_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
         head_dim=cfg.hidden_size // cfg.num_attention_heads, vocab_size=cfg.vocab_size,
         num_blocks=512, block_size=16, device=DEVICE, dtype=DTYPE,
