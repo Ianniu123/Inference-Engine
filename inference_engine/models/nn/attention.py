@@ -7,6 +7,13 @@ from einops import rearrange
 from .linear import Linear
 from .ops import scaled_dot_product_attention
 
+try:  # set USE_FLASH = False to force the PyTorch path
+    from .flash_attention import flash_attention_varlen
+except ImportError:
+    flash_attention_varlen = None
+
+USE_FLASH = flash_attention_varlen is not None
+
 
 class RotaryPositionalEmbedding(nn.Module):
     # Interleaved (GPT-NeoX) RoPE over [T, num_heads, head_dim]; the loader permutes HF's
@@ -53,15 +60,19 @@ class MultiHeadSelfAttention(nn.Module):
             ctx.cache.k[layer_idx][ctx.slot_mapping] = k
             ctx.cache.v[layer_idx][ctx.slot_mapping] = v
 
-        out = self._prefill(q, k, v, ctx.seq_lens) if ctx.is_prefill else self._decode(q, ctx, layer_idx)
+        out = self._prefill(q, k, v, ctx) if ctx.is_prefill else self._decode(q, ctx, layer_idx)
         return self.output_proj(rearrange(out, "... h d -> ... (h d)"))
 
-    def _prefill(self, q, k, v, seq_lens) -> torch.Tensor:
+    def _prefill(self, q, k, v, ctx) -> torch.Tensor:
+        k, v = repeat_kv(k, self.n_rep, 1), repeat_kv(v, self.n_rep, 1)
+        if USE_FLASH and q.is_cuda and ctx.cu_seqlens is not None:
+            return flash_attention_varlen(q, k, v, ctx.cu_seqlens, max(ctx.seq_lens))
+
         device = q.device
-        mask = torch.block_diag(*[torch.tril(torch.ones(n, n, dtype=torch.bool, device=device)) for n in seq_lens])
+        mask = torch.block_diag(*[torch.tril(torch.ones(n, n, dtype=torch.bool, device=device)) for n in ctx.seq_lens])
         q = rearrange(q, "t h d -> h t d")
-        k = rearrange(repeat_kv(k, self.n_rep, 1), "t h d -> h t d")
-        v = rearrange(repeat_kv(v, self.n_rep, 1), "t h d -> h t d")
+        k = rearrange(k, "t h d -> h t d")
+        v = rearrange(v, "t h d -> h t d")
         out = scaled_dot_product_attention(q, k, v, mask=mask)
         return rearrange(out, "h t d -> t h d")
 

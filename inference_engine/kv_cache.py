@@ -43,5 +43,6 @@ class CacheBatch:
     cache: KVCache | None = None
     slot_mapping: torch.Tensor | None = None
     seq_lens: list[int] | None = None             # prefill
+    cu_seqlens: torch.Tensor | None = None        # prefill
     block_tables: torch.Tensor | None = None      # decode
     context_lens: torch.Tensor | None = None      # decode

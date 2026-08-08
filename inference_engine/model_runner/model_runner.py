@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
 from typing import List
 
 import torch
@@ -70,7 +71,10 @@ class ModelRunner:
             seq_lens.append(n)
             seq.num_cached_tokens = n
 
-        ctx = CacheBatch(is_prefill=True, cache=self.cache, slot_mapping=self._t(slots), seq_lens=seq_lens)
+        ctx = CacheBatch(
+            is_prefill=True, cache=self.cache, slot_mapping=self._t(slots), seq_lens=seq_lens,
+            cu_seqlens=torch.tensor([0, *accumulate(seq_lens)], dtype=torch.int32, device=self.device),
+        )
         logits = self.model(self._t(input_ids), self._t(positions), ctx)
         last = torch.tensor(seq_lens, device=self.device).cumsum(0) - 1
         return logits[last]
