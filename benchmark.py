@@ -154,6 +154,34 @@ def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
     return times[len(times) // 2], times[int(0.99 * len(times))]
 
 
+@torch.no_grad()
+def prefill_ms(runner: ModelRunner, use_flash: bool, prompt_len: int = 512):
+    # Time to first token is entirely prefill, which is the only path the Triton kernel
+    # touches. Returns None when the kernel is unavailable (no CUDA / no Triton).
+    from inference_engine.models.nn import attention
+
+    if use_flash and attention.flash_attention_varlen is None:
+        return None
+
+    previous, attention.USE_FLASH = attention.USE_FLASH, use_flash
+    try:
+        seqs = [
+            Sequence([_rng.randrange(100) for _ in range(prompt_len)], i, SamplingParams(), prompt_len)
+            for i in range(BATCH)
+        ]
+        reserve(runner, seqs, 1)
+        runner.run(seqs, is_prefill=True)  # warmup
+        _sync()
+        t0 = time.perf_counter()
+        for _ in range(10):
+            runner.run(seqs, is_prefill=True)
+        _sync()
+        release(runner, seqs)
+        return (time.perf_counter() - t0) / 10 * 1000
+    finally:
+        attention.USE_FLASH = previous
+
+
 def main() -> None:
     model = os.environ.get("MODEL") or build_model_dir()
     hf = AutoModelForCausalLM.from_pretrained(model).eval()
@@ -179,6 +207,14 @@ def main() -> None:
 
     p50, p99 = decode_latency_ms(new_paged_runner(scratch, cfg), Tokenizer(model))
     print(f"\n  inter-token latency @ batch {BATCH}: p50 {p50:.1f} ms   p99 {p99:.1f} ms")
+    _free()
+
+    flash = prefill_ms(new_paged_runner(scratch, cfg), use_flash=True)
+    _free()
+    if flash is not None:
+        torch_attn = prefill_ms(new_paged_runner(scratch, cfg), use_flash=False)
+        print(f"  prefill @ batch {BATCH} x 512 tokens: triton {flash:.1f} ms   "
+              f"pytorch {torch_attn:.1f} ms   {torch_attn / flash:.2f}x")
 
 
 if __name__ == "__main__":
