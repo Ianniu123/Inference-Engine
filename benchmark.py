@@ -109,19 +109,24 @@ def run_continuous(engine: Engine) -> float:
 @torch.no_grad()
 def run_static(runner: ModelRunner, tokenizer: Tokenizer) -> float:
     ids = tokenizer.encode(PROMPT_OF)
+
+    def wave(start: int, steps: int) -> None:
+        seqs = [Sequence(list(ids[j]), j, SamplingParams(), len(ids[j]))
+                for j in range(start, min(start + BATCH, NUM_REQUESTS))]
+        reserve(runner, seqs, steps)
+        prefill = True
+        for _ in range(steps):  # keep every sequence in the batch for the wave's full length
+            logits = runner.run(seqs, is_prefill=prefill)
+            for seq, tok in zip(seqs, logits.argmax(-1).tolist()):
+                seq.input_ids.append(tok)
+            prefill = False
+        release(runner, seqs)
+
+    wave(0, 2)  # warmup: the first paged forward pays Triton's compilation
     _sync()
     t0 = time.perf_counter()
     for i in range(0, NUM_REQUESTS, BATCH):
-        wave = [Sequence(list(ids[j]), j, SamplingParams(), len(ids[j])) for j in range(i, min(i + BATCH, NUM_REQUESTS))]
-        steps = max(LENGTHS[i:i + BATCH])
-        reserve(runner, wave, steps)
-        prefill = True
-        for _ in range(steps):  # keep every sequence in the batch for the wave's full length
-            logits = runner.run(wave, is_prefill=prefill)
-            for seq, tok in zip(wave, logits.argmax(-1).tolist()):
-                seq.input_ids.append(tok)
-            prefill = False
-        release(runner, wave)
+        wave(i, max(LENGTHS[i:i + BATCH]))
     _sync()
     return USEFUL / (time.perf_counter() - t0)
 
@@ -138,17 +143,24 @@ def decode_latency_ms(runner: ModelRunner, tokenizer: Tokenizer):
     # Inter-token latency: time each decode step over a full batch (one token per sequence).
     ids = tokenizer.encode(PROMPT_OF[:BATCH])
     seqs = [Sequence(list(ids[i]), i, SamplingParams(max_tokens=99, ignore_eos=True), len(ids[i])) for i in range(BATCH)]
-    reserve(runner, seqs, 41)  # 1 prefill token + 40 timed decode steps
-    logits = runner.run(seqs, is_prefill=True)
-    for seq, t in zip(seqs, logits.argmax(-1).tolist()):
-        seq.input_ids.append(t)
-    times = []
-    for _ in range(40):
-        _sync(); t0 = time.perf_counter()
-        logits = runner.run(seqs, is_prefill=False)
-        _sync(); times.append((time.perf_counter() - t0) * 1000)
+    warmup, measured = 5, 100
+    reserve(runner, seqs, 1 + warmup + measured)
+
+    def step(is_prefill=False):
+        logits = runner.run(seqs, is_prefill=is_prefill)
         for seq, t in zip(seqs, logits.argmax(-1).tolist()):
             seq.input_ids.append(t)
+
+    step(is_prefill=True)
+    for _ in range(warmup):  # the first decode steps pay allocator and cuBLAS setup
+        step()
+
+    times = []
+    for _ in range(measured):
+        _sync(); t0 = time.perf_counter()
+        step()
+        _sync(); times.append((time.perf_counter() - t0) * 1000)
+
     release(runner, seqs)
     times.sort()
     return times[len(times) // 2], times[int(0.99 * len(times))]
