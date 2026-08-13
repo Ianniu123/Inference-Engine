@@ -26,14 +26,21 @@ spec:
             - containerPort: 8000
           env:
             - name: MODEL
-              value: "gpt2"
+              value: "google/gemma-2b"
+            - name: HF_TOKEN            # gemma is a gated repo
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
           resources:
             requests:
-              cpu: "1"
-              memory: "2Gi"
-            limits:
               cpu: "2"
-              memory: "4Gi"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "12Gi"
+              # nvidia.com/gpu: 1       # uncomment on a GPU node group to use the Triton kernel
           readinessProbe:
             httpGet:
               path: /health
