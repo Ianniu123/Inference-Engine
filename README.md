@@ -63,8 +63,8 @@ kernel against the PyTorch path over ragged sequence lengths.
 pip install -r requirements.txt
 
 MODEL=google/gemma-2b uvicorn server:app --port 8000
-curl -s localhost:8000/generate        -d '{"prompt":"The capital of France is","max_tokens":32}'
-curl -N localhost:8000/generate/stream -d '{"prompt":"Once upon a time","max_tokens":32}'
+curl -s localhost:8000/generate        -H 'Content-Type: application/json' -d '{"prompt":"The capital of France is","max_tokens":32}'
+curl -N localhost:8000/generate/stream -H 'Content-Type: application/json' -d '{"prompt":"Once upon a time","max_tokens":32}'
 curl -s localhost:8000/metrics
 
 docker compose -f deploy/docker-compose.yml up   # engine + Prometheus + Grafana
